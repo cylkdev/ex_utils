@@ -16,7 +16,7 @@ defmodule ExUtils.SerializerTest do
 
   defmodule CustomDumperModule do
     @moduledoc false
-    def to_jsonable_term(val, _opts), do: {:custom_dumper, val}
+    def to_serial_term(val, _opts), do: {:custom_dumper, val}
   end
 
   defmodule NormalizeKeyModule do
@@ -29,6 +29,126 @@ defmodule ExUtils.SerializerTest do
   defmodule NoNormalizeKey do
     @moduledoc false
     def some_other_function, do: :ok
+  end
+
+  defmodule SampleStruct do
+    @moduledoc false
+    defstruct [:a, :b]
+  end
+
+  describe "to_serial_term/2 with pids" do
+    test "registered local pid renders as inspect_string and registered name" do
+      pid = spawn(fn -> Process.sleep(:infinity) end)
+      Process.register(pid, :term_normalizer_test_named_pid)
+
+      assert Serializer.to_serial_term(pid, []) ===
+               "#{inspect(pid)}__term_normalizer_test_named_pid"
+
+      Process.exit(pid, :kill)
+    end
+
+    test "unregistered local pid renders as inspect_string only" do
+      pid = spawn(fn -> Process.sleep(:infinity) end)
+      assert Serializer.to_serial_term(pid, []) === inspect(pid)
+      Process.exit(pid, :kill)
+    end
+
+    test "dead pid renders as inspect_string only" do
+      pid = spawn(fn -> :ok end)
+
+      ref = Process.monitor(pid)
+
+      receive do
+        {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+      after
+        500 -> flunk("process did not exit in time")
+      end
+
+      assert Serializer.to_serial_term(pid, []) === inspect(pid)
+    end
+  end
+
+  describe "to_serial_term/2 with date" do
+    test "default format is extended ISO 8601" do
+      assert Serializer.to_serial_term(~D[2026-05-02], []) === "2026-05-02"
+    end
+
+    test "explicit basic format respected" do
+      assert Serializer.to_serial_term(~D[2026-05-02], date: [format: :basic]) === "20260502"
+    end
+  end
+
+  describe "to_serial_term/2 with time" do
+    test "default format is extended ISO 8601" do
+      assert Serializer.to_serial_term(~T[12:34:56], []) === "12:34:56"
+    end
+
+    test "explicit basic format respected" do
+      assert Serializer.to_serial_term(~T[12:34:56], time: [format: :basic]) === "123456"
+    end
+  end
+
+  describe "to_serial_term/2 with datetime" do
+    test "default format is extended ISO 8601" do
+      assert Serializer.to_serial_term(~U[2026-05-02 12:34:56Z], []) === "2026-05-02T12:34:56Z"
+    end
+
+    test "explicit basic format respected" do
+      assert Serializer.to_serial_term(~U[2026-05-02 12:34:56Z], datetime: [format: :basic]) ===
+               "20260502T123456Z"
+    end
+  end
+
+  describe "to_serial_term/2 with naive datetime" do
+    test "default format is extended ISO 8601" do
+      assert Serializer.to_serial_term(~N[2026-05-02 12:34:56], []) === "2026-05-02T12:34:56"
+    end
+
+    test "explicit basic format respected" do
+      assert Serializer.to_serial_term(~N[2026-05-02 12:34:56], datetime: [format: :basic]) ===
+               "20260502T123456"
+    end
+  end
+
+  describe "to_serial_term/2 with generic structs" do
+    test "returns a map with struct name (Elixir. stripped) and data" do
+      assert Serializer.to_serial_term(%SampleStruct{a: 1, b: 2}, []) ===
+               %{struct: "ExUtils.SerializerTest.SampleStruct", data: %{a: 1, b: 2}}
+    end
+  end
+
+  describe "to_serial_term/2 with functions" do
+    test "named-function reference returns module, function, and arity" do
+      assert Serializer.to_serial_term(&String.upcase/1, []) ===
+               %{module: "Elixir.String", function: "upcase", arity: 1}
+    end
+  end
+
+  describe "to_serial_term/2 with primitives passes through unchanged" do
+    test "binaries" do
+      assert Serializer.to_serial_term("abc", []) === "abc"
+    end
+
+    test "integers" do
+      assert Serializer.to_serial_term(42, []) === 42
+    end
+
+    test "floats" do
+      assert Serializer.to_serial_term(1.5, []) === 1.5
+    end
+
+    test "atoms" do
+      assert Serializer.to_serial_term(:foo, []) === :foo
+    end
+
+    test "booleans" do
+      assert Serializer.to_serial_term(true, []) === true
+      assert Serializer.to_serial_term(false, []) === false
+    end
+
+    test "nil" do
+      assert Serializer.to_serial_term(nil, []) === nil
+    end
   end
 
   describe "serialize/1 default opts" do
@@ -117,29 +237,29 @@ defmodule ExUtils.SerializerTest do
     end
   end
 
-  describe "serialize/2 to_jsonable_term option" do
-    test "{module, function} tuple to_jsonable_term is invoked" do
-      assert Serializer.serialize(%{some_key: 5}, to_jsonable_term: {TupleDumper, :dump}) ===
+  describe "serialize/2 to_serial_term option" do
+    test "{module, function} tuple to_serial_term is invoked" do
+      assert Serializer.serialize(%{some_key: 5}, to_serial_term: {TupleDumper, :dump}) ===
                %{"someKey" => {:dumped, 5}}
     end
 
-    test "2-arity function to_jsonable_term is invoked" do
-      to_jsonable_term = fn val, _opts -> {:fun_dumper, val} end
+    test "2-arity function to_serial_term is invoked" do
+      to_serial_term = fn val, _opts -> {:fun_dumper, val} end
 
-      assert Serializer.serialize(%{some_key: 5}, to_jsonable_term: to_jsonable_term) ===
+      assert Serializer.serialize(%{some_key: 5}, to_serial_term: to_serial_term) ===
                %{"someKey" => {:fun_dumper, 5}}
     end
 
-    test "custom module atom to_jsonable_term is invoked via apply/3" do
-      assert Serializer.serialize(%{some_key: 5}, to_jsonable_term: CustomDumperModule) ===
+    test "custom module atom to_serial_term is invoked via apply/3" do
+      assert Serializer.serialize(%{some_key: 5}, to_serial_term: CustomDumperModule) ===
                %{"someKey" => {:custom_dumper, 5}}
     end
 
-    test "bogus to_jsonable_term raises ArgumentError" do
+    test "bogus to_serial_term raises ArgumentError" do
       assert_raise ArgumentError,
-                   ~r/Expected `:to_jsonable_term` to be an atom, function, or/,
+                   ~r/Expected `:to_serial_term` to be an atom, function, or/,
                    fn ->
-                     Serializer.serialize(%{some_key: 5}, to_jsonable_term: 123)
+                     Serializer.serialize(%{some_key: 5}, to_serial_term: 123)
                    end
     end
   end

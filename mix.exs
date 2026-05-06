@@ -43,6 +43,7 @@ defmodule ExUtils.MixProject do
   defp deps do
     [
       {:recase, "~> 0.9.1"},
+      {:error_message, "~> 0.3"},
       {:credo, "~> 1.4", only: [:dev, :test], runtime: false},
       {:blitz_credo_checks, "~> 0.1.5", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
